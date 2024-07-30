@@ -42,7 +42,7 @@ import org.apache.spark.TaskContext$;
 import scala.Tuple2;
 import scala.Tuple3;
 import scala.Tuple4;
-import scala.collection.JavaConverters;
+import scala.jdk.javaapi.CollectionConverters;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
@@ -57,10 +57,10 @@ import org.apache.hadoop.io.compress.DefaultCodec;
 import org.apache.hadoop.mapred.SequenceFileInputFormat;
 import org.apache.hadoop.mapred.SequenceFileOutputFormat;
 import org.apache.hadoop.mapreduce.Job;
-import org.junit.After;
-import static org.junit.Assert.*;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import org.apache.spark.api.java.JavaDoubleRDD;
 import org.apache.spark.api.java.JavaFutureAction;
@@ -81,6 +81,7 @@ import org.apache.spark.serializer.KryoSerializer;
 import org.apache.spark.storage.StorageLevel;
 import org.apache.spark.util.LongAccumulator;
 import org.apache.spark.util.StatCounter;
+import org.apache.spark.util.Utils;
 
 // The test suite itself is Serializable so that anonymous Function implementations can be
 // serialized, as an alternative to converting these anonymous classes to static inner classes;
@@ -89,14 +90,14 @@ public class JavaAPISuite implements Serializable {
   private transient JavaSparkContext sc;
   private transient File tempDir;
 
-  @Before
-  public void setUp() {
+  @BeforeEach
+  public void setUp() throws IOException {
     sc = new JavaSparkContext("local", "JavaAPISuite");
-    tempDir = Files.createTempDir();
+    tempDir = Utils.createTempDir();
     tempDir.deleteOnExit();
   }
 
-  @After
+  @AfterEach
   public void tearDown() {
     sc.stop();
     sc = null;
@@ -186,9 +187,9 @@ public class JavaAPISuite implements Serializable {
     long s0 = splits[0].count();
     long s1 = splits[1].count();
     long s2 = splits[2].count();
-    assertTrue(s0 + " not within expected range", s0 > 150 && s0 < 250);
-    assertTrue(s1 + " not within expected range", s1 > 250 && s1 < 350);
-    assertTrue(s2 + " not within expected range", s2 > 430 && s2 < 570);
+    assertTrue(s0 > 150 && s0 < 250, s0 + " not within expected range");
+    assertTrue(s1 > 250 && s1 < 350, s1 + " not within expected range");
+    assertTrue(s2 > 430 && s2 < 570, s2 + " not within expected range");
   }
 
   @Test
@@ -280,7 +281,7 @@ public class JavaAPISuite implements Serializable {
   @Test
   public void emptyRDD() {
     JavaRDD<String> rdd = sc.emptyRDD();
-    assertEquals("Empty RDD shouldn't have any values", 0, rdd.count());
+    assertEquals(0, rdd.count(), "Empty RDD shouldn't have any values");
   }
 
   @Test
@@ -1267,8 +1268,7 @@ public class JavaAPISuite implements Serializable {
 
     Partitioner defaultPartitioner = Partitioner.defaultPartitioner(
       combinedRDD.rdd(),
-      JavaConverters.collectionAsScalaIterableConverter(
-        Collections.<RDD<?>>emptyList()).asScala().toSeq());
+      CollectionConverters.asScala(Collections.<RDD<?>>emptyList()).toSeq());
     combinedRDD = originalRDD.keyBy(keyFunction)
       .combineByKey(
         createCombinerFunction,
@@ -1494,12 +1494,7 @@ public class JavaAPISuite implements Serializable {
     future.cancel(true);
     assertTrue(future.isCancelled());
     assertTrue(future.isDone());
-    try {
-      future.get(2000, TimeUnit.MILLISECONDS);
-      fail("Expected future.get() for cancelled job to throw CancellationException");
-    } catch (CancellationException ignored) {
-      // pass
-    }
+    assertThrows(CancellationException.class, () -> future.get(2000, TimeUnit.MILLISECONDS));
   }
 
   @Test
@@ -1507,12 +1502,9 @@ public class JavaAPISuite implements Serializable {
     List<Integer> data = Arrays.asList(1, 2, 3, 4, 5);
     JavaRDD<Integer> rdd = sc.parallelize(data, 1);
     JavaFutureAction<Long> future = rdd.map(new BuggyMapFunction<>()).countAsync();
-    try {
-      future.get(2, TimeUnit.SECONDS);
-      fail("Expected future.get() for failed job to throw ExecutionException");
-    } catch (ExecutionException ee) {
-      assertTrue(Throwables.getStackTraceAsString(ee).contains("Custom exception!"));
-    }
+    ExecutionException ee = assertThrows(ExecutionException.class,
+      () -> future.get(2, TimeUnit.SECONDS));
+    assertTrue(Throwables.getStackTraceAsString(ee).contains("Custom exception!"));
     assertTrue(future.isDone());
   }
 

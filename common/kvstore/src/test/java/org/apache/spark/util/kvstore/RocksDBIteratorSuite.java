@@ -20,17 +20,14 @@ package org.apache.spark.util.kvstore;
 import java.io.File;
 
 import org.apache.commons.io.FileUtils;
-import org.apache.commons.lang3.SystemUtils;
-import org.junit.AfterClass;
-
-import static org.junit.Assume.assumeFalse;
+import org.junit.jupiter.api.AfterAll;
 
 public class RocksDBIteratorSuite extends DBIteratorSuite {
 
   private static File dbpath;
   private static RocksDB db;
 
-  @AfterClass
+  @AfterAll
   public static void cleanup() throws Exception {
     if (db != null) {
       db.close();
@@ -42,7 +39,6 @@ public class RocksDBIteratorSuite extends DBIteratorSuite {
 
   @Override
   protected KVStore createStore() throws Exception {
-    assumeFalse(SystemUtils.IS_OS_MAC_OSX && SystemUtils.OS_ARCH.equals("aarch64"));
     dbpath = File.createTempFile("test.", ".rdb");
     dbpath.delete();
     db = new RocksDB(dbpath);

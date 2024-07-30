@@ -28,8 +28,10 @@ import org.apache.spark.sql.execution.streaming.{MemoryStream, SessionWindowStat
 import org.apache.spark.sql.functions.{count, session_window}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.streaming.util.StatefulOpClusteredDistributionTestHelper
+import org.apache.spark.tags.SlowSQLTest
 import org.apache.spark.util.Utils
 
+@SlowSQLTest
 class StreamingSessionWindowDistributionSuite extends StreamTest
   with StatefulOpClusteredDistributionTestHelper with Logging {
 
@@ -53,7 +55,8 @@ class StreamingSessionWindowDistributionSuite extends StreamTest
 
       val sessionUpdates = events
         .repartition($"userId")
-        .groupBy(session_window($"eventTime", "10 seconds") as 'session, 'sessionId, 'userId)
+        .groupBy(session_window($"eventTime", "10 seconds") as Symbol("session"),
+          $"sessionId", $"userId")
         .agg(count("*").as("numEvents"))
         .selectExpr("sessionId", "userId", "CAST(session.start AS LONG)",
           "CAST(session.end AS LONG)",
@@ -127,7 +130,8 @@ class StreamingSessionWindowDistributionSuite extends StreamTest
 
       val sessionUpdates = events
         .repartition($"userId")
-        .groupBy(session_window($"eventTime", "10 seconds") as 'session, 'sessionId, 'userId)
+        .groupBy(session_window($"eventTime", "10 seconds") as Symbol("session"),
+          $"sessionId", $"userId")
         .agg(count("*").as("numEvents"))
         .selectExpr("sessionId", "userId", "CAST(session.start AS LONG)",
           "CAST(session.end AS LONG)",

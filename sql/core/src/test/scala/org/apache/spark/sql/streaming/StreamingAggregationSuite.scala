@@ -25,7 +25,7 @@ import scala.annotation.tailrec
 import org.apache.commons.io.FileUtils
 import org.scalatest.Assertions
 
-import org.apache.spark.{SparkEnv, SparkException}
+import org.apache.spark.{SparkEnv, SparkException, SparkUnsupportedOperationException}
 import org.apache.spark.rdd.BlockRDD
 import org.apache.spark.sql.{AnalysisException, DataFrame, Dataset, Row, SparkSession}
 import org.apache.spark.sql.catalyst.InternalRow
@@ -36,19 +36,22 @@ import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.exchange.Exchange
 import org.apache.spark.sql.execution.streaming._
 import org.apache.spark.sql.execution.streaming.sources.MemorySink
-import org.apache.spark.sql.execution.streaming.state.{StateSchemaNotCompatible, StateStore, StreamingAggregationStateManager}
+import org.apache.spark.sql.execution.streaming.state.{StateStore, StateStoreValueSchemaNotCompatible, StreamingAggregationStateManager}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.streaming.OutputMode._
 import org.apache.spark.sql.streaming.util.{MockSourceProvider, StreamManualClock}
 import org.apache.spark.sql.types.{StructType, TimestampType}
 import org.apache.spark.storage.{BlockId, StorageLevel, TestBlockId}
+import org.apache.spark.tags.SlowSQLTest
+import org.apache.spark.util.ArrayImplicits._
 import org.apache.spark.util.Utils
 
 object FailureSingleton {
   var firstTime = true
 }
 
+@SlowSQLTest
 class StreamingAggregationSuite extends StateStoreMetricsTest with Assertions {
 
   import testImplicits._
@@ -209,7 +212,7 @@ class StreamingAggregationSuite extends StateStoreMetricsTest with Assertions {
       }
 
       def stateOperatorProgresses: Seq[StateOperatorProgress] = {
-        lastExecutedBatch.stateOperators
+        lastExecutedBatch.stateOperators.toImmutableArraySeq
       }
     }
 
@@ -414,13 +417,13 @@ class StreamingAggregationSuite extends StateStoreMetricsTest with Assertions {
       inputDataOne.toDF()
         .groupBy($"value")
         .agg(count("*"))
-        .where(Symbol("value") >= current_timestamp().cast("long") - 10L)
+        .where($"value" >= current_timestamp().cast("long") - 10L)
     val inputDataTwo = MemoryStream[Long]
     val aggregatedTwo =
       inputDataTwo.toDF()
         .groupBy($"value")
         .agg(count("*"))
-        .where(Symbol("value") >= localtimestamp().cast(TimestampType).cast("long") - 10L)
+        .where($"value" >= localtimestamp().cast(TimestampType).cast("long") - 10L)
 
     Seq((inputDataOne, aggregatedOne), (inputDataTwo, aggregatedTwo)).foreach { x =>
       val inputData = x._1
@@ -476,7 +479,7 @@ class StreamingAggregationSuite extends StateStoreMetricsTest with Assertions {
     val inputData = MemoryStream[Long]
     val aggregated =
       inputData.toDF()
-        .select(to_utc_timestamp(from_unixtime(Symbol("value") * SECONDS_PER_DAY), tz))
+        .select(to_utc_timestamp(from_unixtime($"value" * SECONDS_PER_DAY), tz))
         .toDF("value")
         .groupBy($"value")
         .agg(count("*"))
@@ -523,12 +526,12 @@ class StreamingAggregationSuite extends StateStoreMetricsTest with Assertions {
     val streamInput = MemoryStream[Int]
     val batchDF = Seq(1, 2, 3, 4, 5)
         .toDF("value")
-        .withColumn("parity", Symbol("value") % 2)
-        .groupBy(Symbol("parity"))
+        .withColumn("parity", $"value" % 2)
+        .groupBy($"parity")
         .agg(count("*") as Symbol("joinValue"))
     val joinDF = streamInput
         .toDF()
-        .join(batchDF, Symbol("value") === Symbol("parity"))
+        .join(batchDF, $"value" === $"parity")
 
     // make sure we're planning an aggregate in the first place
     assert(batchDF.queryExecution.optimizedPlan match { case _: Aggregate => true })
@@ -644,7 +647,7 @@ class StreamingAggregationSuite extends StateStoreMetricsTest with Assertions {
         def createDf(partitions: Int): Dataset[(Long, Long)] = {
           spark.readStream
             .format((new MockSourceProvider).getClass.getCanonicalName)
-            .load().coalesce(partitions).groupBy(Symbol("a") % 1).count().as[(Long, Long)]
+            .load().coalesce(partitions).groupBy($"a" % 1).count().as[(Long, Long)]
         }
 
         testStream(createDf(1), Complete())(
@@ -676,7 +679,7 @@ class StreamingAggregationSuite extends StateStoreMetricsTest with Assertions {
   testWithAllStateVersions("SPARK-22230: last should change with new batches") {
     val input = MemoryStream[Int]
 
-    val aggregated = input.toDF().agg(last(Symbol("value")))
+    val aggregated = input.toDF().agg(last($"value"))
     testStream(aggregated, OutputMode.Complete())(
       AddData(input, 1, 2, 3),
       CheckLastBatch(3),
@@ -705,7 +708,7 @@ class StreamingAggregationSuite extends StateStoreMetricsTest with Assertions {
       .groupBy("group")
       .agg(collect_list("value"))
     testStream(df, outputMode = OutputMode.Update)(
-      AddData(input, (1 to spark.sqlContext.conf.objectAggSortBasedFallbackThreshold): _*),
+      AddData(input, (1 to spark.sessionState.conf.objectAggSortBasedFallbackThreshold): _*),
       AssertOnQuery { q =>
         q.processAllAvailable()
         true
@@ -779,11 +782,11 @@ class StreamingAggregationSuite extends StateStoreMetricsTest with Assertions {
       testStream(aggregated, Update())(
         StartStream(checkpointLocation = tempDir.getAbsolutePath),
         AddData(inputData, 21),
-        ExpectFailure[SparkException] { e =>
+        ExpectFailure[StateStoreValueSchemaNotCompatible] { e =>
           val stateSchemaExc = findStateSchemaNotCompatible(e)
           assert(stateSchemaExc.isDefined)
           val msg = stateSchemaExc.get.getMessage
-          assert(msg.contains("Provided schema doesn't match to the schema for existing state"))
+          assert(msg.contains("does not match existing"))
           // other verifications are presented in StateStoreSuite
         }
       )
@@ -906,9 +909,10 @@ class StreamingAggregationSuite extends StateStoreMetricsTest with Assertions {
   }
 
   @tailrec
-  private def findStateSchemaNotCompatible(exc: Throwable): Option[StateSchemaNotCompatible] = {
+  private def findStateSchemaNotCompatible(exc: Throwable):
+    Option[SparkUnsupportedOperationException] = {
     exc match {
-      case e1: StateSchemaNotCompatible => Some(e1)
+      case e1: SparkUnsupportedOperationException => Some(e1)
       case e1 if e1.getCause != null => findStateSchemaNotCompatible(e1.getCause)
       case _ => None
     }
@@ -956,3 +960,7 @@ class StreamingAggregationSuite extends StateStoreMetricsTest with Assertions {
     }
   }
 }
+
+@SlowSQLTest
+class RocksDBStateStoreStreamingAggregationSuite
+  extends StreamingAggregationSuite with RocksDBStateStoreTest

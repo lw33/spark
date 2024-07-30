@@ -20,13 +20,13 @@ package org.apache.spark.sql.execution.python
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 
+import org.apache.spark.SparkException
 import org.apache.spark.api.python.PythonEvalType
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateExpression
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreePattern._
-import org.apache.spark.sql.errors.QueryCompilationErrors
 
 
 /**
@@ -40,7 +40,6 @@ object ExtractPythonUDFFromAggregate extends Rule[LogicalPlan] {
    */
   private def belongAggregate(e: Expression, agg: Aggregate): Boolean = {
     e.isInstanceOf[AggregateExpression] ||
-      PythonUDF.isGroupedAggPandasUDF(e) ||
       agg.groupingExpressions.exists(_.semanticEquals(e))
   }
 
@@ -158,7 +157,7 @@ object ExtractGroupingPythonUDFFromAggregate extends Rule[LogicalPlan] {
  * This has the limitation that the input to the Python UDF is not allowed include attributes from
  * multiple child operators.
  */
-object ExtractPythonUDFs extends Rule[LogicalPlan] with PredicateHelper {
+object ExtractPythonUDFs extends Rule[LogicalPlan] {
 
   private type EvalType = Int
   private type EvalTypeChecker = EvalType => Boolean
@@ -264,16 +263,19 @@ object ExtractPythonUDFs extends Rule[LogicalPlan] with PredicateHelper {
 
           val evalTypes = validUdfs.map(_.evalType).toSet
           if (evalTypes.size != 1) {
-            throw QueryCompilationErrors.unexpectedEvalTypesForUDFsError(evalTypes)
+            throw SparkException.internalError(
+              "Expected udfs have the same evalType but got different evalTypes: " +
+              evalTypes.mkString(","))
           }
           val evalType = evalTypes.head
           val evaluation = evalType match {
             case PythonEvalType.SQL_BATCHED_UDF =>
               BatchEvalPython(validUdfs, resultAttrs, child)
-            case PythonEvalType.SQL_SCALAR_PANDAS_UDF | PythonEvalType.SQL_SCALAR_PANDAS_ITER_UDF =>
+            case PythonEvalType.SQL_SCALAR_PANDAS_UDF | PythonEvalType.SQL_SCALAR_PANDAS_ITER_UDF
+                 | PythonEvalType.SQL_ARROW_BATCHED_UDF =>
               ArrowEvalPython(validUdfs, resultAttrs, child, evalType)
             case _ =>
-              throw new IllegalStateException("Unexpected UDF evalType")
+              throw SparkException.internalError("Unexpected UDF evalType")
           }
 
           attributeMap ++= validUdfs.map(canonicalizeDeterministic).zip(resultAttrs)
@@ -284,8 +286,9 @@ object ExtractPythonUDFs extends Rule[LogicalPlan] with PredicateHelper {
       }
       // Other cases are disallowed as they are ambiguous or would require a cartesian
       // product.
-      udfs.map(canonicalizeDeterministic).filterNot(attributeMap.contains).foreach {
-        udf => sys.error(s"Invalid PythonUDF $udf, requires attributes from more than one child.")
+      udfs.map(canonicalizeDeterministic).filterNot(attributeMap.contains).foreach { udf =>
+        throw SparkException.internalError(
+          s"Invalid PythonUDF $udf, requires attributes from more than one child.")
       }
 
       val rewritten = plan.withNewChildren(newChildren).transformExpressions {
@@ -299,6 +302,26 @@ object ExtractPythonUDFs extends Rule[LogicalPlan] with PredicateHelper {
         Project(plan.output, newPlan)
       } else {
         newPlan
+      }
+    }
+  }
+}
+
+/**
+ * Extracts PythonUDTFs from operators, rewriting the query plan so that UDTFs can be evaluated.
+ */
+object ExtractPythonUDTFs extends Rule[LogicalPlan] {
+  def apply(plan: LogicalPlan): LogicalPlan = plan match {
+    // A correlated subquery will be rewritten into join later, and will go through this rule
+    // eventually. Here we skip subquery, as Python UDTFs only need to be extracted once.
+    case s: Subquery if s.correlated => plan
+
+    case _ => plan.transformUpWithPruning(_.containsPattern(GENERATE)) {
+      case g @ Generate(func: PythonUDTF, _, _, _, _, child) => func.evalType match {
+        case PythonEvalType.SQL_TABLE_UDF =>
+          BatchEvalPythonUDTF(func, g.requiredChildOutput, g.generatorOutput, child)
+        case PythonEvalType.SQL_ARROW_TABLE_UDF =>
+          ArrowEvalPythonUDTF(func, g.requiredChildOutput, g.generatorOutput, child, func.evalType)
       }
     }
   }

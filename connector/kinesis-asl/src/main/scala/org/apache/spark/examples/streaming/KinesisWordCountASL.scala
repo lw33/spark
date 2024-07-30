@@ -70,7 +70,7 @@ import org.apache.spark.streaming.kinesis.KinesisInputDStream
  * For more information, see
  * http://docs.aws.amazon.com/AWSSdkDocsJava/latest/DeveloperGuide/credentials.html
  *
- * See http://spark.apache.org/docs/latest/streaming-kinesis-integration.html for more details on
+ * See https://spark.apache.org/docs/latest/streaming-kinesis-integration.html for more details on
  * the Kinesis Spark Streaming integration.
  */
 object KinesisWordCountASL extends Logging {
@@ -87,7 +87,7 @@ object KinesisWordCountASL extends Logging {
           |                   (e.g. https://kinesis.us-east-1.amazonaws.com)
           |
           |Generate input data for Kinesis stream using the example KinesisWordProducerASL.
-          |See http://spark.apache.org/docs/latest/streaming-kinesis-integration.html for more
+          |See https://spark.apache.org/docs/latest/streaming-kinesis-integration.html for more
           |details.
         """.stripMargin)
       System.exit(1)
@@ -230,9 +230,9 @@ object KinesisWordProducerASL {
     // Iterate and put records onto the stream per the given recordPerSec and wordsPerRecord
     for (i <- 1 to 10) {
       // Generate recordsPerSec records to put onto the stream
-      val records = (1 to recordsPerSecond.toInt).foreach { recordNum =>
+      val records = (1 to recordsPerSecond).foreach { recordNum =>
         // Randomly generate wordsPerRecord number of words
-        val data = (1 to wordsPerRecord.toInt).map(x => {
+        val data = (1 to wordsPerRecord).map(x => {
           // Get a random index to a word
           val randomWordIdx = Random.nextInt(randomWords.size)
           val randomWord = randomWords(randomWordIdx)

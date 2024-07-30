@@ -20,12 +20,13 @@ package org.apache.spark.ml.regression
 import java.util.Locale
 
 import breeze.stats.{distributions => dist}
+import breeze.stats.distributions.Rand.FixedSeed.randBasis
 import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.fs.Path
 
 import org.apache.spark.SparkException
 import org.apache.spark.annotation.Since
-import org.apache.spark.internal.Logging
+import org.apache.spark.internal.{Logging, LogKeys, MDC}
 import org.apache.spark.ml.PredictorParams
 import org.apache.spark.ml.attribute._
 import org.apache.spark.ml.feature.{Instance, OffsetInstance}
@@ -384,7 +385,7 @@ class GeneralizedLinearRegression @Since("2.0.0") (@Since("2.0.0") override val 
     instr.logParams(this, labelCol, featuresCol, weightCol, offsetCol, predictionCol,
       linkPredictionCol, family, solver, fitIntercept, link, maxIter, regParam, tol,
       aggregationDepth)
-    val numFeatures = MetadataUtils.getNumFeatures(dataset, $(featuresCol))
+    val numFeatures = getNumFeatures(dataset, $(featuresCol))
     instr.logNumFeatures(numFeatures)
 
     if (numFeatures > WeightedLeastSquares.MAX_NUM_FEATURES) {
@@ -679,7 +680,7 @@ object GeneralizedLinearRegression extends DefaultParamsReadable[GeneralizedLine
     }
   }
 
-  private[regression] object Tweedie{
+  private[regression] object Tweedie {
 
     /** Constant used in initialization and deviance to avoid numerical issues. */
     val delta: Double = 0.1
@@ -1073,10 +1074,10 @@ class GeneralizedLinearRegressionModel private[ml] (
     }
 
     if (numColsOutput == 0) {
-      this.logWarning(s"$uid: GeneralizedLinearRegressionModel.transform() does nothing" +
-        " because no output columns were set.")
+      this.logWarning(log"${MDC(LogKeys.UUID, uid)}: GeneralizedLinearRegressionModel.transform()" +
+        log" does nothing because no output columns were set.")
     }
-    outputData.toDF
+    outputData.toDF()
   }
 
   /**
@@ -1140,11 +1141,11 @@ object GeneralizedLinearRegressionModel extends MLReadable[GeneralizedLinearRegr
 
     override protected def saveImpl(path: String): Unit = {
       // Save metadata and Params
-      DefaultParamsWriter.saveMetadata(instance, path, sc)
+      DefaultParamsWriter.saveMetadata(instance, path, sparkSession)
       // Save model data: intercept, coefficients
       val data = Data(instance.intercept, instance.coefficients)
       val dataPath = new Path(path, "data").toString
-      sparkSession.createDataFrame(Seq(data)).repartition(1).write.parquet(dataPath)
+      sparkSession.createDataFrame(Seq(data)).write.parquet(dataPath)
     }
   }
 
@@ -1155,7 +1156,7 @@ object GeneralizedLinearRegressionModel extends MLReadable[GeneralizedLinearRegr
     private val className = classOf[GeneralizedLinearRegressionModel].getName
 
     override def load(path: String): GeneralizedLinearRegressionModel = {
-      val metadata = DefaultParamsReader.loadMetadata(path, sc, className)
+      val metadata = DefaultParamsReader.loadMetadata(path, sparkSession, className)
 
       val dataPath = new Path(path, "data").toString
       val data = sparkSession.read.parquet(dataPath)
@@ -1417,7 +1418,7 @@ class GeneralizedLinearRegressionSummary private[regression] (
         case Row(label: Double, pred: Double, weight: Double) =>
           (label, pred, weight)
     }
-    family.aic(t, deviance, numInstances, weightSum) + 2 * rank
+    family.aic(t, deviance, numInstances.toDouble, weightSum) + 2 * rank
   }
 }
 

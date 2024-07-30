@@ -19,13 +19,25 @@ import json
 import os
 import time
 import uuid
+import functools
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Generic,
+    List,
+    Optional,
+    Sequence,
+    Type,
+    TypeVar,
+    cast,
+    TYPE_CHECKING,
+)
 
-from typing import Any, Dict, Generic, List, Optional, Sequence, Type, TypeVar, cast, TYPE_CHECKING
-
-
-from pyspark import SparkContext, since
+from pyspark import since
 from pyspark.ml.common import inherit_doc
 from pyspark.sql import SparkSession
+from pyspark.sql.utils import is_remote
 from pyspark.util import VersionUtils
 
 if TYPE_CHECKING:
@@ -33,6 +45,7 @@ if TYPE_CHECKING:
     from pyspark.ml._typing import PipelineStage
     from pyspark.ml.base import Params
     from pyspark.ml.wrapper import JavaWrapper
+    from pyspark.core.context import SparkContext
 
 T = TypeVar("T")
 RW = TypeVar("RW", bound="BaseReadWrite")
@@ -41,12 +54,16 @@ JW = TypeVar("JW", bound="JavaMLWriter")
 RL = TypeVar("RL", bound="MLReadable")
 JR = TypeVar("JR", bound="JavaMLReader")
 
+FuncT = TypeVar("FuncT", bound=Callable[..., Any])
+
 
 def _jvm() -> "JavaGateway":
     """
     Returns the JVM view associated with SparkContext. Must be called
     after SparkContext is initialized.
     """
+    from pyspark.core.context import SparkContext
+
     jvm = SparkContext._jvm
     if jvm:
         return jvm
@@ -105,7 +122,7 @@ class BaseReadWrite:
         return self._sparkSession
 
     @property
-    def sc(self) -> SparkContext:
+    def sc(self) -> "SparkContext":
         """
         Returns the underlying `SparkContext`.
         """
@@ -304,7 +321,7 @@ class JavaMLReader(MLReader[RL]):
             raise NotImplementedError(
                 "This Java ML type cannot be loaded into Python currently: %r" % self._clazz
             )
-        return self._clazz._from_java(java_obj)  # type: ignore[attr-defined]
+        return self._clazz._from_java(java_obj)
 
     def session(self: JR, sparkSession: SparkSession) -> JR:
         """Sets the Spark Session to use for loading."""
@@ -421,7 +438,7 @@ class DefaultParamsWriter(MLWriter):
     def saveMetadata(
         instance: "Params",
         path: str,
-        sc: SparkContext,
+        sc: "SparkContext",
         extraMetadata: Optional[Dict[str, Any]] = None,
         paramMap: Optional[Dict[str, Any]] = None,
     ) -> None:
@@ -447,12 +464,15 @@ class DefaultParamsWriter(MLWriter):
         metadataJson = DefaultParamsWriter._get_metadata_to_save(
             instance, sc, extraMetadata, paramMap
         )
-        sc.parallelize([metadataJson], 1).saveAsTextFile(metadataPath)
+        spark = SparkSession._getActiveSessionOrCreate()
+        spark.createDataFrame([(metadataJson,)], schema=["value"]).coalesce(1).write.text(
+            metadataPath
+        )
 
     @staticmethod
     def _get_metadata_to_save(
         instance: "Params",
-        sc: SparkContext,
+        sc: "SparkContext",
         extraMetadata: Optional[Dict[str, Any]] = None,
         paramMap: Optional[Dict[str, Any]] = None,
     ) -> str:
@@ -536,10 +556,8 @@ class DefaultParamsReader(MLReader[RL]):
         """
         parts = clazz.split(".")
         module = ".".join(parts[:-1])
-        m = __import__(module)
-        for comp in parts[1:]:
-            m = getattr(m, comp)
-        return m
+        m = __import__(module, fromlist=[parts[-1]])
+        return getattr(m, parts[-1])
 
     def load(self, path: str) -> RL:
         metadata = DefaultParamsReader.loadMetadata(path, self.sc)
@@ -550,7 +568,7 @@ class DefaultParamsReader(MLReader[RL]):
         return instance
 
     @staticmethod
-    def loadMetadata(path: str, sc: SparkContext, expectedClassName: str = "") -> Dict[str, Any]:
+    def loadMetadata(path: str, sc: "SparkContext", expectedClassName: str = "") -> Dict[str, Any]:
         """
         Load metadata saved using :py:meth:`DefaultParamsWriter.saveMetadata`
 
@@ -562,7 +580,8 @@ class DefaultParamsReader(MLReader[RL]):
             If non empty, this is checked against the loaded metadata.
         """
         metadataPath = os.path.join(path, "metadata")
-        metadataStr = sc.textFile(metadataPath, 1).first()
+        spark = SparkSession._getActiveSessionOrCreate()
+        metadataStr = spark.read.text(metadataPath).first()[0]  # type: ignore[index]
         loadedVals = DefaultParamsReader._parseMetaData(metadataStr, expectedClassName)
         return loadedVals
 
@@ -622,7 +641,7 @@ class DefaultParamsReader(MLReader[RL]):
         return metadata["class"].startswith("pyspark.ml.")
 
     @staticmethod
-    def loadParamsInstance(path: str, sc: SparkContext) -> RL:
+    def loadParamsInstance(path: str, sc: "SparkContext") -> RL:
         """
         Load a :py:class:`Params` instance from the given path, and return it.
         This assumes the instance inherits from :py:class:`MLReadable`.
@@ -645,7 +664,7 @@ class HasTrainingSummary(Generic[T]):
     .. versionadded:: 3.0.0
     """
 
-    @property  # type: ignore[misc]
+    @property
     @since("2.1.0")
     def hasSummary(self) -> bool:
         """
@@ -654,7 +673,7 @@ class HasTrainingSummary(Generic[T]):
         """
         return cast("JavaWrapper", self)._call_java("hasSummary")
 
-    @property  # type: ignore[misc]
+    @property
     @since("2.1.0")
     def summary(self) -> T:
         """
@@ -696,9 +715,7 @@ class MetaAlgorithmReadWrite:
         elif isinstance(pyInstance, OneVsRest):
             pySubStages = [pyInstance.getClassifier()]
         elif isinstance(pyInstance, OneVsRestModel):
-            pySubStages = [
-                pyInstance.getClassifier()
-            ] + pyInstance.models  # type: ignore[assignment, operator]
+            pySubStages = [pyInstance.getClassifier()] + pyInstance.models  # type: ignore[operator]
         else:
             pySubStages = []
 
@@ -719,3 +736,18 @@ class MetaAlgorithmReadWrite:
                 f"UIDs. List of UIDs: {list(uidMap.keys())}."
             )
         return uidMap
+
+
+def try_remote_functions(f: FuncT) -> FuncT:
+    """Mark API supported from Spark Connect."""
+
+    @functools.wraps(f)
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        if is_remote() and "PYSPARK_NO_NAMESPACE_SHARE" not in os.environ:
+            from pyspark.ml.connect import functions
+
+            return getattr(functions, f.__name__)(*args, **kwargs)
+        else:
+            return f(*args, **kwargs)
+
+    return cast(FuncT, wrapped)

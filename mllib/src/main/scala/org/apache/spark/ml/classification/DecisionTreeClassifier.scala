@@ -124,7 +124,6 @@ class DecisionTreeClassifier @Since("1.4.0") (
         ".train() called with non-matching numClasses and thresholds.length." +
         s" numClasses=$numClasses, but thresholds has length ${$(thresholds).length}")
     }
-    validateNumClasses(numClasses)
 
     val instances = dataset.select(
       checkClassificationLabels($(labelCol), Some(numClasses)),
@@ -294,7 +293,7 @@ object DecisionTreeClassificationModel extends MLReadable[DecisionTreeClassifica
       val extraMetadata: JObject = Map(
         "numFeatures" -> instance.numFeatures,
         "numClasses" -> instance.numClasses)
-      DefaultParamsWriter.saveMetadata(instance, path, sc, Some(extraMetadata))
+      DefaultParamsWriter.saveMetadata(instance, path, sparkSession, Some(extraMetadata))
       val (nodeData, _) = NodeData.build(instance.rootNode, 0)
       val dataPath = new Path(path, "data").toString
       val numDataParts = NodeData.inferNumPartitions(instance.numNodes)
@@ -310,7 +309,7 @@ object DecisionTreeClassificationModel extends MLReadable[DecisionTreeClassifica
 
     override def load(path: String): DecisionTreeClassificationModel = {
       implicit val format = DefaultFormats
-      val metadata = DefaultParamsReader.loadMetadata(path, sc, className)
+      val metadata = DefaultParamsReader.loadMetadata(path, sparkSession, className)
       val numFeatures = (metadata.metadata \ "numFeatures").extract[Int]
       val numClasses = (metadata.metadata \ "numClasses").extract[Int]
       val root = loadTreeNodes(path, metadata, sparkSession)

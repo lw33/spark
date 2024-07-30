@@ -303,10 +303,14 @@ public class RocksDB implements KVStore {
     KVStoreView<T> view = view(klass).index(index);
 
     for (Object indexValue : indexValues) {
-      for (T value: view.first(indexValue).last(indexValue)) {
-        Object itemKey = naturalIndex.getValue(value);
-        delete(klass, itemKey);
-        removed = true;
+      try (KVStoreIterator<T> iterator =
+        view.first(indexValue).last(indexValue).closeableIterator()) {
+        while (iterator.hasNext()) {
+          T value = iterator.next();
+          Object itemKey = naturalIndex.getValue(value);
+          delete(klass, itemKey);
+          removed = true;
+        }
       }
     }
 
@@ -355,7 +359,7 @@ public class RocksDB implements KVStore {
    * Closes the given iterator if the DB is still open. Trying to close a JNI RocksDB handle
    * with a closed DB can cause JVM crashes, so this ensures that situation does not happen.
    */
-  void closeIterator(RocksDBIterator<?> it) throws IOException {
+  void closeIterator(RocksIterator it) {
     notifyIteratorClosed(it);
     synchronized (this._db) {
       org.rocksdb.RocksDB _db = this._db.get();
@@ -369,8 +373,11 @@ public class RocksDB implements KVStore {
    * Remove iterator from iterator tracker. `RocksDBIterator` calls it to notify
    * iterator is closed.
    */
-  void notifyIteratorClosed(RocksDBIterator<?> it) {
-    iteratorTracker.removeIf(ref -> it.equals(ref.get()));
+  void notifyIteratorClosed(RocksIterator rocksIterator) {
+    iteratorTracker.removeIf(ref -> {
+      RocksDBIterator<?> rocksDBIterator = ref.get();
+      return rocksDBIterator != null && rocksIterator.equals(rocksDBIterator.internalIterator());
+    });
   }
 
   /** Returns metadata about indices for the given type. */

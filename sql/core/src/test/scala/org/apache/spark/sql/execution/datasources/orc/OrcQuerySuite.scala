@@ -190,7 +190,7 @@ abstract class OrcQueryTest extends OrcTest {
     // Respect `orc.compress` (i.e., OrcConf.COMPRESS).
     withTempPath { file =>
       spark.range(0, 10).write
-        .option(COMPRESS.getAttribute, "ZLIB")
+        .option(COMPRESS.getAttribute, OrcCompressionCodec.ZLIB.name())
         .orc(file.getCanonicalPath)
 
       val maybeOrcFile = file.listFiles().find(_.getName.endsWith(".zlib.orc"))
@@ -199,15 +199,15 @@ abstract class OrcQueryTest extends OrcTest {
       val orcFilePath = new Path(maybeOrcFile.get.getAbsolutePath)
       val conf = OrcFile.readerOptions(new Configuration())
       Utils.tryWithResource(OrcFile.createReader(orcFilePath, conf)) { reader =>
-        assert("ZLIB" === reader.getCompressionKind.name)
+        assert(OrcCompressionCodec.ZLIB.name() === reader.getCompressionKind.name)
       }
     }
 
     // `compression` overrides `orc.compress`.
     withTempPath { file =>
       spark.range(0, 10).write
-        .option("compression", "ZLIB")
-        .option(COMPRESS.getAttribute, "SNAPPY")
+        .option("compression", OrcCompressionCodec.ZLIB.name())
+        .option(COMPRESS.getAttribute, OrcCompressionCodec.SNAPPY.name())
         .orc(file.getCanonicalPath)
 
       val maybeOrcFile = file.listFiles().find(_.getName.endsWith(".zlib.orc"))
@@ -216,7 +216,7 @@ abstract class OrcQueryTest extends OrcTest {
       val orcFilePath = new Path(maybeOrcFile.get.getAbsolutePath)
       val conf = OrcFile.readerOptions(new Configuration())
       Utils.tryWithResource(OrcFile.createReader(orcFilePath, conf)) { reader =>
-        assert("ZLIB" === reader.getCompressionKind.name)
+        assert(OrcCompressionCodec.ZLIB.name() === reader.getCompressionKind.name)
       }
     }
   }
@@ -224,7 +224,7 @@ abstract class OrcQueryTest extends OrcTest {
   test("Compression options for writing to an ORC file (SNAPPY, ZLIB and NONE)") {
     withTempPath { file =>
       spark.range(0, 10).write
-        .option("compression", "ZLIB")
+        .option("compression", OrcCompressionCodec.ZLIB.name())
         .orc(file.getCanonicalPath)
 
       val maybeOrcFile = file.listFiles().find(_.getName.endsWith(".zlib.orc"))
@@ -233,13 +233,13 @@ abstract class OrcQueryTest extends OrcTest {
       val orcFilePath = new Path(maybeOrcFile.get.getAbsolutePath)
       val conf = OrcFile.readerOptions(new Configuration())
       Utils.tryWithResource(OrcFile.createReader(orcFilePath, conf)) { reader =>
-        assert("ZLIB" === reader.getCompressionKind.name)
+        assert(OrcCompressionCodec.ZLIB.name() === reader.getCompressionKind.name)
       }
     }
 
     withTempPath { file =>
       spark.range(0, 10).write
-        .option("compression", "SNAPPY")
+        .option("compression", OrcCompressionCodec.SNAPPY.name())
         .orc(file.getCanonicalPath)
 
       val maybeOrcFile = file.listFiles().find(_.getName.endsWith(".snappy.orc"))
@@ -248,13 +248,13 @@ abstract class OrcQueryTest extends OrcTest {
       val orcFilePath = new Path(maybeOrcFile.get.getAbsolutePath)
       val conf = OrcFile.readerOptions(new Configuration())
       Utils.tryWithResource(OrcFile.createReader(orcFilePath, conf)) { reader =>
-        assert("SNAPPY" === reader.getCompressionKind.name)
+        assert(OrcCompressionCodec.SNAPPY.name() === reader.getCompressionKind.name)
       }
     }
 
     withTempPath { file =>
       spark.range(0, 10).write
-        .option("compression", "NONE")
+        .option("compression", OrcCompressionCodec.NONE.name())
         .orc(file.getCanonicalPath)
 
       val maybeOrcFile = file.listFiles().find(_.getName.endsWith(".orc"))
@@ -263,7 +263,7 @@ abstract class OrcQueryTest extends OrcTest {
       val orcFilePath = new Path(maybeOrcFile.get.getAbsolutePath)
       val conf = OrcFile.readerOptions(new Configuration())
       Utils.tryWithResource(OrcFile.createReader(orcFilePath, conf)) { reader =>
-        assert("NONE" === reader.getCompressionKind.name)
+        assert(OrcCompressionCodec.NONE.name() === reader.getCompressionKind.name)
       }
     }
   }
@@ -372,7 +372,7 @@ abstract class OrcQueryTest extends OrcTest {
     withTempPath { dir =>
       val path = dir.getCanonicalPath
 
-      spark.range(0, 10).select(Symbol("id") as "Acol").write.orc(path)
+      spark.range(0, 10).select($"id" as "Acol").write.orc(path)
       spark.read.orc(path).schema("Acol")
       intercept[IllegalArgumentException] {
         spark.read.orc(path).schema("acol")
@@ -413,23 +413,23 @@ abstract class OrcQueryTest extends OrcTest {
           // results. So, this checks if the number of result is less than the original count
           // of data, and then checks if it contains the expected data.
           assert(
-            sourceDf.count < 10 && expectedData.subsetOf(data),
+            sourceDf.count() < 10 && expectedData.subsetOf(data),
             s"No data was filtered for predicate: $pred")
         }
 
-        checkPredicate(Symbol("a") === 5, List(5).map(Row(_, null)))
-        checkPredicate(Symbol("a") <=> 5, List(5).map(Row(_, null)))
-        checkPredicate(Symbol("a") < 5, List(1, 3).map(Row(_, null)))
-        checkPredicate(Symbol("a") <= 5, List(1, 3, 5).map(Row(_, null)))
-        checkPredicate(Symbol("a") > 5, List(7, 9).map(Row(_, null)))
-        checkPredicate(Symbol("a") >= 5, List(5, 7, 9).map(Row(_, null)))
-        checkPredicate(Symbol("a").isNull, List(null).map(Row(_, null)))
-        checkPredicate(Symbol("b").isNotNull, List())
-        checkPredicate(Symbol("a").isin(3, 5, 7), List(3, 5, 7).map(Row(_, null)))
-        checkPredicate(Symbol("a") > 0 && Symbol("a") < 3, List(1).map(Row(_, null)))
-        checkPredicate(Symbol("a") < 1 || Symbol("a") > 8, List(9).map(Row(_, null)))
-        checkPredicate(!(Symbol("a") > 3), List(1, 3).map(Row(_, null)))
-        checkPredicate(!(Symbol("a") > 0 && Symbol("a") < 3), List(3, 5, 7, 9).map(Row(_, null)))
+        checkPredicate($"a" === 5, List(5).map(Row(_, null)))
+        checkPredicate($"a" <=> 5, List(5).map(Row(_, null)))
+        checkPredicate($"a" < 5, List(1, 3).map(Row(_, null)))
+        checkPredicate($"a" <= 5, List(1, 3, 5).map(Row(_, null)))
+        checkPredicate($"a" > 5, List(7, 9).map(Row(_, null)))
+        checkPredicate($"a" >= 5, List(5, 7, 9).map(Row(_, null)))
+        checkPredicate($"a".isNull, List(null).map(Row(_, null)))
+        checkPredicate($"b".isNotNull, List())
+        checkPredicate($"a".isin(3, 5, 7), List(3, 5, 7).map(Row(_, null)))
+        checkPredicate($"a" > 0 && $"a" < 3, List(1).map(Row(_, null)))
+        checkPredicate($"a" < 1 || $"a" > 8, List(9).map(Row(_, null)))
+        checkPredicate(!($"a" > 3), List(1, 3).map(Row(_, null)))
+        checkPredicate(!($"a" > 0 && $"a" < 3), List(3, 5, 7, 9).map(Row(_, null)))
       }
     }
   }
@@ -508,7 +508,7 @@ abstract class OrcQueryTest extends OrcTest {
       conf.setBoolean("hive.io.file.read.all.columns", false)
 
       val orcRecordReader = {
-        val file = new File(path).listFiles().find(_.getName.endsWith(".snappy.orc")).head
+        val file = new File(path).listFiles().find(_.getName.endsWith(".orc")).head
         val split = new FileSplit(new Path(file.toURI), 0, file.length, Array.empty[String])
         val attemptId = new TaskAttemptID(new TaskID(new JobID(), TaskType.MAP, 0), 0)
         val hadoopAttemptContext = new TaskAttemptContextImpl(conf, attemptId)
@@ -590,10 +590,13 @@ abstract class OrcQueryTest extends OrcTest {
     withSQLConf(SQLConf.IGNORE_CORRUPT_FILES.key -> "true") {
       testIgnoreCorruptFiles()
       testIgnoreCorruptFilesWithoutSchemaInfer()
-      val m1 = intercept[AnalysisException] {
-        testAllCorruptFiles()
-      }.getMessage
-      assert(m1.contains("Unable to infer schema for ORC"))
+      checkError(
+        exception = intercept[AnalysisException] {
+          testAllCorruptFiles()
+        },
+        errorClass = "UNABLE_TO_INFER_SCHEMA",
+        parameters = Map("format" -> "ORC")
+      )
       testAllCorruptFilesWithoutSchemaInfer()
     }
 
@@ -601,19 +604,31 @@ abstract class OrcQueryTest extends OrcTest {
       val e1 = intercept[SparkException] {
         testIgnoreCorruptFiles()
       }
-      assert(e1.getMessage.contains("Malformed ORC file"))
+      assert(e1.getErrorClass.startsWith("FAILED_READ_FILE"))
+      assert(e1.getCause.getMessage.contains("Malformed ORC file") ||
+        // Hive ORC table scan uses a different code path and has one more error stack
+        e1.getCause.getCause.getMessage.contains("Malformed ORC file"))
       val e2 = intercept[SparkException] {
         testIgnoreCorruptFilesWithoutSchemaInfer()
       }
-      assert(e2.getMessage.contains("Malformed ORC file"))
-      val e3 = intercept[SparkException] {
-        testAllCorruptFiles()
-      }
-      assert(e3.getMessage.contains("Could not read footer for file"))
+      assert(e2.getErrorClass.startsWith("FAILED_READ_FILE"))
+      assert(e2.getCause.getMessage.contains("Malformed ORC file") ||
+        // Hive ORC table scan uses a different code path and has one more error stack
+        e2.getCause.getCause.getMessage.contains("Malformed ORC file"))
+      checkErrorMatchPVals(
+        exception = intercept[SparkException] {
+          testAllCorruptFiles()
+        },
+        errorClass = "FAILED_READ_FILE.CANNOT_READ_FILE_FOOTER",
+        parameters = Map("path" -> "file:.*")
+      )
       val e4 = intercept[SparkException] {
         testAllCorruptFilesWithoutSchemaInfer()
       }
-      assert(e4.getMessage.contains("Malformed ORC file"))
+      assert(e4.getErrorClass.startsWith("FAILED_READ_FILE"))
+      assert(e4.getCause.getMessage.contains("Malformed ORC file") ||
+        // Hive ORC table scan uses a different code path and has one more error stack
+        e4.getCause.getCause.getMessage.contains("Malformed ORC file"))
     }
   }
 
@@ -640,7 +655,7 @@ abstract class OrcQuerySuite extends OrcQueryTest with SharedSparkSession {
   test("LZO compression options for writing to an ORC file") {
     withTempPath { file =>
       spark.range(0, 10).write
-        .option("compression", "LZO")
+        .option("compression", OrcCompressionCodec.LZO.name())
         .orc(file.getCanonicalPath)
 
       val maybeOrcFile = file.listFiles().find(_.getName.endsWith(".lzo.orc"))
@@ -649,7 +664,7 @@ abstract class OrcQuerySuite extends OrcQueryTest with SharedSparkSession {
       val orcFilePath = new Path(maybeOrcFile.get.getAbsolutePath)
       val conf = OrcFile.readerOptions(new Configuration())
       Utils.tryWithResource(OrcFile.createReader(orcFilePath, conf)) { reader =>
-        assert("LZO" === reader.getCompressionKind.name)
+        assert(OrcCompressionCodec.LZO.name() === reader.getCompressionKind.name)
       }
     }
   }
@@ -814,17 +829,71 @@ abstract class OrcQuerySuite extends OrcQueryTest with SharedSparkSession {
                       | timestamp_ntz '2021-03-14 02:15:00.0' as ts_ntz3
                       |""".stripMargin
 
-      val df = sql(sqlText)
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        val df = sql(sqlText)
 
-      df.write.mode("overwrite").orc("ts_ntz_orc")
+        df.write.mode("overwrite").orc(path)
 
-      val query = "select * from `orc`.`ts_ntz_orc`"
+        val query = s"select * from `orc`.`$path`"
 
-      DateTimeTestUtils.outstandingZoneIds.foreach { zoneId =>
-        DateTimeTestUtils.withDefaultTimeZone(zoneId) {
-          withAllNativeOrcReaders {
-            checkAnswer(sql(query), df)
+        DateTimeTestUtils.outstandingZoneIds.foreach { zoneId =>
+          DateTimeTestUtils.withDefaultTimeZone(zoneId) {
+            withAllNativeOrcReaders {
+              checkAnswer(sql(query), df)
+            }
           }
+        }
+      }
+    }
+  }
+
+  // SPARK-39519: Ignore this case because it requires more than 4g heap memory to ensure test
+  // stability when use Java 11. Should test it manually when upgrading `hive-storage-api`
+  ignore("SPARK-39387: BytesColumnVector should not throw RuntimeException due to overflow") {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      val df = spark.range(1, 22, 1, 1).map { _ =>
+        val byteData = Array.fill[Byte](1024 * 1024)('X')
+        val mapData = (1 to 100).map(i => (i, byteData))
+        mapData
+      }.toDF()
+      df.write.format("orc").save(path)
+    }
+  }
+
+  test("SPARK-39381: Make vectorized orc columar writer batch size configurable") {
+    Seq(10, 100).foreach(batchSize => {
+      withSQLConf(SQLConf.ORC_VECTORIZED_WRITER_BATCH_SIZE.key -> batchSize.toString) {
+        withTempPath { dir =>
+          val path = dir.getCanonicalPath
+          val df = spark.range(1, 1024, 1, 1).map { _ =>
+            val byteData = Array.fill[Byte](5 * 1024 * 1024)('X')
+            byteData
+          }.toDF()
+          df.write.format("orc").save(path)
+        }
+      }
+    })
+  }
+
+  test("SPARK-39830: Reading ORC table that requires type promotion may throw AIOOBE") {
+    withSQLConf(SQLConf.ORC_VECTORIZED_WRITER_BATCH_SIZE.key -> "1",
+      "orc.stripe.size" -> "10240",
+      "orc.rows.between.memory.checks" -> "1") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        val df = spark.range(1, 1 + 512, 1, 1).map { i =>
+          if (i == 1) {
+            (i, Array.fill[Byte](5 * 1024 * 1024)('X'))
+          } else {
+            (i, Array.fill[Byte](1)('X'))
+          }
+        }.toDF("c1", "c2")
+        df.write.format("orc").save(path)
+        withTable("t1") {
+          spark.sql(s"create table t1 (c1 string,c2 binary) using orc location '$path'")
+          spark.sql("select * from t1").collect()
         }
       }
     }

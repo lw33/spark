@@ -17,7 +17,6 @@
 
 import sys
 from abc import abstractmethod, ABCMeta
-
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from pyspark import since, keyword_only
@@ -66,8 +65,6 @@ class Evaluator(Params, metaclass=ABCMeta):
 
     .. versionadded:: 1.4.0
     """
-
-    pass
 
     @abstractmethod
     def _evaluate(self, dataset: DataFrame) -> float:

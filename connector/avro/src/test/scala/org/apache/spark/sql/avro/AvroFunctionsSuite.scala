@@ -19,28 +19,29 @@ package org.apache.spark.sql.avro
 
 import java.io.ByteArrayOutputStream
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
-import org.apache.avro.Schema
+import org.apache.avro.{Schema, SchemaBuilder}
 import org.apache.avro.generic.{GenericDatumWriter, GenericRecord, GenericRecordBuilder}
 import org.apache.avro.io.EncoderFactory
 
 import org.apache.spark.SparkException
-import org.apache.spark.sql.{QueryTest, Row}
+import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
 import org.apache.spark.sql.execution.LocalTableScanExec
 import org.apache.spark.sql.functions.{col, lit, struct}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SharedSparkSession
+import org.apache.spark.sql.types.StructType
 
 class AvroFunctionsSuite extends QueryTest with SharedSparkSession {
   import testImplicits._
 
   test("roundtrip in to_avro and from_avro - int and string") {
-    val df = spark.range(10).select('id, 'id.cast("string").as("str"))
+    val df = spark.range(10).select($"id", $"id".cast("string").as("str"))
 
     val avroDF = df.select(
-      functions.to_avro('id).as("a"),
-      functions.to_avro('str).as("b"))
+      functions.to_avro($"id").as("a"),
+      functions.to_avro($"str").as("b"))
     val avroTypeLong = s"""
       |{
       |  "type": "int",
@@ -54,13 +55,13 @@ class AvroFunctionsSuite extends QueryTest with SharedSparkSession {
       |}
     """.stripMargin
     checkAnswer(avroDF.select(
-      functions.from_avro('a, avroTypeLong),
-      functions.from_avro('b, avroTypeStr)), df)
+      functions.from_avro($"a", avroTypeLong),
+      functions.from_avro($"b", avroTypeStr)), df)
   }
 
   test("roundtrip in to_avro and from_avro - struct") {
-    val df = spark.range(10).select(struct('id, 'id.cast("string").as("str")).as("struct"))
-    val avroStructDF = df.select(functions.to_avro('struct).as("avro"))
+    val df = spark.range(10).select(struct($"id", $"id".cast("string").as("str")).as("struct"))
+    val avroStructDF = df.select(functions.to_avro($"struct").as("avro"))
     val avroTypeStruct = s"""
       |{
       |  "type": "record",
@@ -72,13 +73,13 @@ class AvroFunctionsSuite extends QueryTest with SharedSparkSession {
       |}
     """.stripMargin
     checkAnswer(avroStructDF.select(
-      functions.from_avro('avro, avroTypeStruct)), df)
+      functions.from_avro($"avro", avroTypeStruct)), df)
   }
 
   test("handle invalid input in from_avro") {
     val count = 10
-    val df = spark.range(count).select(struct('id, 'id.as("id2")).as("struct"))
-    val avroStructDF = df.select(functions.to_avro('struct).as("avro"))
+    val df = spark.range(count).select(struct($"id", $"id".as("id2")).as("struct"))
+    val avroStructDF = df.select(functions.to_avro($"struct").as("avro"))
     val avroTypeStruct = s"""
       |{
       |  "type": "record",
@@ -93,7 +94,7 @@ class AvroFunctionsSuite extends QueryTest with SharedSparkSession {
     intercept[SparkException] {
       avroStructDF.select(
         functions.from_avro(
-          'avro, avroTypeStruct, Map("mode" -> "FAILFAST").asJava)).collect()
+          $"avro", avroTypeStruct, Map("mode" -> "FAILFAST").asJava)).collect()
     }
 
     // For PERMISSIVE mode, the result should be row of null columns.
@@ -101,7 +102,7 @@ class AvroFunctionsSuite extends QueryTest with SharedSparkSession {
     checkAnswer(
       avroStructDF.select(
        functions.from_avro(
-          'avro, avroTypeStruct, Map("mode" -> "PERMISSIVE").asJava)),
+          $"avro", avroTypeStruct, Map("mode" -> "PERMISSIVE").asJava)),
       expected)
   }
 
@@ -161,9 +162,9 @@ class AvroFunctionsSuite extends QueryTest with SharedSparkSession {
 
   test("SPARK-27506: roundtrip in to_avro and from_avro with different compatible schemas") {
     val df = spark.range(10).select(
-      struct('id.as("col1"), 'id.cast("string").as("col2")).as("struct")
+      struct($"id".as("col1"), $"id".cast("string").as("col2")).as("struct")
     )
-    val avroStructDF = df.select(functions.to_avro('struct).as("avro"))
+    val avroStructDF = df.select(functions.to_avro($"struct").as("avro"))
     val actualAvroSchema =
       s"""
          |{
@@ -190,20 +191,20 @@ class AvroFunctionsSuite extends QueryTest with SharedSparkSession {
          |""".stripMargin
 
     val expected = spark.range(10).select(
-      struct('id.as("col1"), 'id.cast("string").as("col2"), lit("").as("col3")).as("struct")
+      struct($"id".as("col1"), $"id".cast("string").as("col2"), lit("").as("col3")).as("struct")
     )
 
     checkAnswer(
       avroStructDF.select(
         functions.from_avro(
-          'avro,
+          $"avro",
           actualAvroSchema,
           Map("avroSchema" -> evolvedAvroSchema).asJava)),
       expected)
   }
 
   test("roundtrip in to_avro and from_avro - struct with nullable Avro schema") {
-    val df = spark.range(10).select(struct('id, 'id.cast("string").as("str")).as("struct"))
+    val df = spark.range(10).select(struct($"id", $"id".cast("string").as("str")).as("struct"))
     val avroTypeStruct = s"""
       |{
       |  "type": "record",
@@ -214,28 +215,156 @@ class AvroFunctionsSuite extends QueryTest with SharedSparkSession {
       |  ]
       |}
     """.stripMargin
-    val avroStructDF = df.select(functions.to_avro('struct, avroTypeStruct).as("avro"))
+    val avroStructDF = df.select(functions.to_avro($"struct", avroTypeStruct).as("avro"))
     checkAnswer(avroStructDF.select(
-      functions.from_avro('avro, avroTypeStruct)), df)
+      functions.from_avro($"avro", avroTypeStruct)), df)
   }
 
-  test("to_avro with unsupported nullable Avro schema") {
-    val df = spark.range(10).select(struct('id, 'id.cast("string").as("str")).as("struct"))
-    for (unsupportedAvroType <- Seq("""["null", "int", "long"]""", """["int", "long"]""")) {
+  test("to_avro optional union Avro schema") {
+    val df = spark.range(10).select(struct($"id", $"id".cast("string").as("str")).as("struct"))
+    for (supportedAvroType <- Seq("""["null", "int", "long"]""", """["int", "long"]""")) {
       val avroTypeStruct = s"""
         |{
         |  "type": "record",
         |  "name": "struct",
         |  "fields": [
-        |    {"name": "id", "type": $unsupportedAvroType},
+        |    {"name": "id", "type": $supportedAvroType},
         |    {"name": "str", "type": ["null", "string"]}
         |  ]
         |}
       """.stripMargin
-      val message = intercept[SparkException] {
-        df.select(functions.to_avro('struct, avroTypeStruct).as("avro")).show()
+      val avroStructDF = df.select(functions.to_avro($"struct", avroTypeStruct).as("avro"))
+      checkAnswer(avroStructDF.select(
+        functions.from_avro($"avro", avroTypeStruct)), df)
+    }
+  }
+
+  test("to_avro complex union Avro schema") {
+    val df = Seq((Some(1), None), (None, Some("a"))).toDF()
+      .select(struct(struct($"_1".as("member0"), $"_2".as("member1")).as("u")).as("struct"))
+    val avroTypeStruct = SchemaBuilder.record("struct").fields()
+      .name("u").`type`().unionOf().intType().and().stringType().endUnion().noDefault()
+      .endRecord().toString
+    val avroStructDF = df.select(functions.to_avro($"struct", avroTypeStruct).as("avro"))
+    checkAnswer(avroStructDF.select(
+      functions.from_avro($"avro", avroTypeStruct)), df)
+  }
+
+  test("SPARK-39775: Disable validate default values when parsing Avro schemas") {
+    val avroTypeStruct = s"""
+      |{
+      |  "type": "record",
+      |  "name": "struct",
+      |  "fields": [
+      |    {"name": "id", "type": "long", "default": null}
+      |  ]
+      |}
+    """.stripMargin
+    val options = Map("avroSchema" -> avroTypeStruct)
+    val avroOptions = AvroOptions(options)
+    val avroSchema = avroOptions.schema.get
+    val sparkSchema = SchemaConverters
+      .toSqlType(avroSchema, avroOptions.useStableIdForUnionType,
+        avroOptions.stableIdPrefixForUnionType)
+      .dataType
+      .asInstanceOf[StructType]
+
+    val df = spark.range(5).select($"id")
+    val structDf = df.select(struct($"id").as("struct"))
+    val avroStructDF = structDf.select(functions.to_avro($"struct", avroTypeStruct).as("avro"))
+    checkAnswer(avroStructDF.select(functions.from_avro($"avro", avroTypeStruct)), structDf)
+
+    withTempPath { dir =>
+      df.write.format("avro").save(dir.getCanonicalPath)
+      checkAnswer(spark.read.schema(sparkSchema).format("avro").load(dir.getCanonicalPath), df)
+
+      val msg = intercept[SparkException] {
+        spark.read.option("avroSchema", avroTypeStruct).format("avro")
+          .load(dir.getCanonicalPath)
+          .collect()
       }.getCause.getMessage
-      assert(message.contains("Only UNION of a null type and a non-null type is supported"))
+      assert(msg.contains("Invalid default for field id: null not a \"long\""))
+    }
+  }
+
+  test("SPARK-48545: from_avro and to_avro SQL functions") {
+    withTable("t") {
+      sql(
+        """
+          |create table t as
+          |  select named_struct('u', named_struct('member0', member0, 'member1', member1)) as s
+          |  from values (1, null), (null,  'a') tab(member0, member1)
+          |""".stripMargin)
+      val jsonFormatSchema =
+        """
+          |{
+          |  "type": "record",
+          |  "name": "struct",
+          |  "fields": [{
+          |    "name": "u",
+          |    "type": ["int","string"]
+          |  }]
+          |}
+          |""".stripMargin
+      val toAvroSql =
+        s"""
+           |select to_avro(s, '$jsonFormatSchema') as result from t
+           |""".stripMargin
+      val avroResult = spark.sql(toAvroSql).collect()
+      assert(avroResult != null)
+      checkAnswer(
+        spark.sql(s"select from_avro(result, '$jsonFormatSchema', map()).u from ($toAvroSql)"),
+        Seq(Row(Row(1, null)),
+          Row(Row(null, "a"))))
+
+      // Negative tests.
+      checkError(
+        exception = intercept[AnalysisException](sql(
+          s"""
+             |select to_avro(s, 42) as result from t
+             |""".stripMargin)),
+        errorClass = "DATATYPE_MISMATCH.TYPE_CHECK_FAILURE_WITH_HINT",
+        parameters = Map("sqlExpr" -> "\"toavro(s, 42)\"",
+          "msg" -> ("The second argument of the TO_AVRO SQL function must be a constant string " +
+            "containing the JSON representation of the schema to use for converting the value to " +
+            "AVRO format"),
+          "hint" -> ""),
+        queryContext = Array(ExpectedContext(
+          fragment = "to_avro(s, 42)",
+          start = 8,
+          stop = 21)))
+      checkError(
+        exception = intercept[AnalysisException](sql(
+          s"""
+             |select from_avro(s, 42, '') as result from t
+             |""".stripMargin)),
+        errorClass = "DATATYPE_MISMATCH.TYPE_CHECK_FAILURE_WITH_HINT",
+        parameters = Map("sqlExpr" -> "\"fromavro(s, 42, )\"",
+          "msg" -> ("The second argument of the FROM_AVRO SQL function must be a constant string " +
+            "containing the JSON representation of the schema to use for converting the value " +
+            "from AVRO format"),
+          "hint" -> ""),
+        queryContext = Array(ExpectedContext(
+          fragment = "from_avro(s, 42, '')",
+          start = 8,
+          stop = 27)))
+      checkError(
+        exception = intercept[AnalysisException](sql(
+          s"""
+             |select from_avro(s, '$jsonFormatSchema', 42) as result from t
+             |""".stripMargin)),
+        errorClass = "DATATYPE_MISMATCH.TYPE_CHECK_FAILURE_WITH_HINT",
+        parameters = Map(
+          "sqlExpr" ->
+            s"\"fromavro(s, $jsonFormatSchema, 42)\"".stripMargin,
+          "msg" -> ("The third argument of the FROM_AVRO SQL function must be a constant map of " +
+            "strings to strings containing the options to use for converting the value " +
+            "from AVRO format"),
+          "hint" -> ""),
+        queryContext = Array(ExpectedContext(
+          fragment = s"from_avro(s, '$jsonFormatSchema', 42)",
+          start = 8,
+          stop = 138)))
     }
   }
 }

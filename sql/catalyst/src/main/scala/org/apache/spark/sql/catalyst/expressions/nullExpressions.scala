@@ -19,12 +19,14 @@ package org.apache.spark.sql.catalyst.expressions
 
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.TypeCheckResult
+import org.apache.spark.sql.catalyst.expressions.Cast._
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.catalyst.expressions.codegen.Block._
 import org.apache.spark.sql.catalyst.trees.TreePattern.{COALESCE, NULL_CHECK, TreePattern}
 import org.apache.spark.sql.catalyst.util.TypeUtils
+import org.apache.spark.sql.errors.QueryCompilationErrors
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
-
 
 /**
  * An expression that is evaluated to the first non-null input.
@@ -47,23 +49,38 @@ import org.apache.spark.sql.types._
   since = "1.0.0",
   group = "conditional_funcs")
 // scalastyle:on line.size.limit
-case class Coalesce(children: Seq[Expression]) extends ComplexTypeMergingExpression {
+case class Coalesce(children: Seq[Expression])
+  extends ComplexTypeMergingExpression with ConditionalExpression {
 
   /** Coalesce is nullable if all of its children are nullable, or if it has no children. */
   override def nullable: Boolean = children.forall(_.nullable)
-
-  // Coalesce is foldable if all children are foldable.
-  override def foldable: Boolean = children.forall(_.foldable)
 
   final override val nodePatterns: Seq[TreePattern] = Seq(COALESCE)
 
   override def checkInputDataTypes(): TypeCheckResult = {
     if (children.length < 1) {
-      TypeCheckResult.TypeCheckFailure(
-        s"input to function $prettyName requires at least one argument")
+      throw QueryCompilationErrors.wrongNumArgsError(
+        toSQLId(prettyName), Seq("> 0"), children.length)
     } else {
-      TypeUtils.checkForSameTypeInputExpr(children.map(_.dataType), s"function $prettyName")
+      TypeUtils.checkForSameTypeInputExpr(children.map(_.dataType), prettyName)
     }
+  }
+
+  /**
+   * We should only return the first child, because others may not get accessed.
+   */
+  override def alwaysEvaluatedInputs: Seq[Expression] = children.head :: Nil
+
+  override def withNewAlwaysEvaluatedInputs(alwaysEvaluatedInputs: Seq[Expression]): Coalesce = {
+    withNewChildrenInternal(alwaysEvaluatedInputs.toIndexedSeq ++ children.drop(1))
+  }
+
+  override def branchGroups: Seq[Seq[Expression]] = if (children.length > 1) {
+    // If there is only one child, the first child is already covered by
+    // `alwaysEvaluatedInputs` and we should exclude it here.
+    Seq(children)
+  } else {
+    Nil
   }
 
   override def eval(input: InternalRow): Any = {
@@ -142,7 +159,15 @@ case class NullIf(left: Expression, right: Expression, replacement: Expression)
   extends RuntimeReplaceable with InheritAnalysisRules {
 
   def this(left: Expression, right: Expression) = {
-    this(left, right, If(EqualTo(left, right), Literal.create(null, left.dataType), left))
+    this(left, right,
+      if (!SQLConf.get.getConf(SQLConf.ALWAYS_INLINE_COMMON_EXPR)) {
+        With(left) { case Seq(ref) =>
+          If(EqualTo(ref, right), Literal.create(null, left.dataType), ref)
+        }
+      } else {
+        If(EqualTo(left, right), Literal.create(null, left.dataType), left)
+      }
+    )
   }
 
   override def parameters: Seq[Expression] = Seq(left, right)
@@ -261,12 +286,24 @@ case class IsNaN(child: Expression) extends UnaryExpression
   since = "1.5.0",
   group = "conditional_funcs")
 case class NaNvl(left: Expression, right: Expression)
-    extends BinaryExpression with ImplicitCastInputTypes {
+    extends BinaryExpression with ConditionalExpression with ImplicitCastInputTypes {
 
   override def dataType: DataType = left.dataType
 
   override def inputTypes: Seq[AbstractDataType] =
     Seq(TypeCollection(DoubleType, FloatType), TypeCollection(DoubleType, FloatType))
+
+  /**
+   * We can only guarantee the left child can be always accessed. If we hit the left child,
+   * the right child will not be accessed.
+   */
+  override def alwaysEvaluatedInputs: Seq[Expression] = left :: Nil
+
+  override def withNewAlwaysEvaluatedInputs(alwaysEvaluatedInputs: Seq[Expression]): NaNvl = {
+    copy(left = alwaysEvaluatedInputs.head)
+  }
+
+  override def branchGroups: Seq[Seq[Expression]] = Seq(children)
 
   override def eval(input: InternalRow): Any = {
     val value = left.eval(input)

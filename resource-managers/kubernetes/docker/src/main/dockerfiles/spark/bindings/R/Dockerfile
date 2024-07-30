@@ -25,14 +25,14 @@ USER 0
 
 RUN mkdir ${SPARK_HOME}/R
 
-# Install R 4.0.4 (http://cloud.r-project.org/bin/linux/debian/)
+# Install R 4.1.2 (http://cloud.r-project.org/bin/linux/debian/)
 RUN \
   apt-get update && \
   apt install -y r-base r-base-dev && \
-  rm -rf /var/cache/apt/*
+  rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/*
 
 COPY R ${SPARK_HOME}/R
-ENV R_HOME /usr/lib/R
+ENV R_HOME=/usr/lib/R
 
 WORKDIR /opt/spark/work-dir
 ENTRYPOINT [ "/opt/entrypoint.sh" ]

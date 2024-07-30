@@ -19,15 +19,13 @@ import importlib
 
 import pandas as pd
 import numpy as np
-from pyspark.ml.feature import Bucketizer
-from pyspark.mllib.stat import KernelDensity
-from pyspark.sql import functions as F
 from pandas.core.base import PandasObject
 from pandas.core.dtypes.inference import is_integer
 
+from pyspark.sql import functions as F
+from pyspark.sql.utils import is_remote
 from pyspark.pandas.missing import unsupported_function
 from pyspark.pandas.config import get_option
-from pyspark.pandas.spark import functions as SF
 from pyspark.pandas.utils import name_like_string
 
 
@@ -148,6 +146,8 @@ class HistogramPlotBase(NumericPlotBase):
 
     @staticmethod
     def compute_hist(psdf, bins):
+        from pyspark.ml.feature import Bucketizer
+
         # 'data' is a Spark DataFrame that selects one column.
         assert isinstance(bins, (np.ndarray, np.generic))
 
@@ -191,12 +191,12 @@ class HistogramPlotBase(NumericPlotBase):
 
             if output_df is None:
                 output_df = bucket_df.select(
-                    SF.lit(group_id).alias("__group_id"), F.col(bucket_name).alias("__bucket")
+                    F.lit(group_id).alias("__group_id"), F.col(bucket_name).alias("__bucket")
                 )
             else:
                 output_df = output_df.union(
                     bucket_df.select(
-                        SF.lit(group_id).alias("__group_id"), F.col(bucket_name).alias("__bucket")
+                        F.lit(group_id).alias("__group_id"), F.col(bucket_name).alias("__bucket")
                     )
                 )
 
@@ -273,6 +273,45 @@ class HistogramPlotBase(NumericPlotBase):
 
 class BoxPlotBase:
     @staticmethod
+    def compute_multicol_stats(data, colnames, whis, precision):
+        # Computes mean, median, Q1 and Q3 with approx_percentile and precision
+        scol = []
+        for colname in colnames:
+            scol.append(
+                F.percentile_approx(
+                    "`%s`" % colname, [0.25, 0.50, 0.75], int(1.0 / precision)
+                ).alias("{}_percentiles%".format(colname))
+            )
+            scol.append(F.mean("`%s`" % colname).alias("{}_mean".format(colname)))
+
+        #      a_percentiles  a_mean    b_percentiles  b_mean
+        # 0  [3.0, 3.2, 3.2]    3.18  [5.1, 5.9, 6.4]    5.86
+        pdf = data._internal.resolved_copy.spark_frame.select(*scol).toPandas()
+
+        i = 0
+        multicol_stats = {}
+        for colname in colnames:
+            q1, med, q3 = pdf.iloc[0, i]
+            iqr = q3 - q1
+            lfence = q1 - whis * iqr
+            ufence = q3 + whis * iqr
+            i += 1
+
+            mean = pdf.iloc[0, i]
+            i += 1
+
+            multicol_stats[colname] = {
+                "mean": mean,
+                "med": med,
+                "q1": q1,
+                "q3": q3,
+                "lfence": lfence,
+                "ufence": ufence,
+            }
+
+        return multicol_stats
+
+    @staticmethod
     def compute_stats(data, colname, whis, precision):
         # Computes mean, median, Q1 and Q3 with approx_percentile and precision
         pdf = data._psdf._internal.resolved_copy.spark_frame.agg(
@@ -308,6 +347,15 @@ class BoxPlotBase:
         return stats, (lfence.values[0], ufence.values[0])
 
     @staticmethod
+    def multicol_outliers(data, multicol_stats):
+        scols = {}
+        for colname, stats in multicol_stats.items():
+            scols["__{}_outlier".format(colname)] = ~F.col("`%s`" % colname).between(
+                stats["lfence"], stats["ufence"]
+            )
+        return data._internal.resolved_copy.spark_frame.withColumns(scols)
+
+    @staticmethod
     def outliers(data, colname, lfence, ufence):
         # Builds expression to identify outliers
         expression = F.col("`%s`" % colname).between(lfence, ufence)
@@ -315,6 +363,39 @@ class BoxPlotBase:
         return data._psdf._internal.resolved_copy.spark_frame.withColumn(
             "__{}_outlier".format(colname), ~expression
         )
+
+    @staticmethod
+    def calc_multicol_whiskers(colnames, multicol_outliers):
+        # Computes min and max values of non-outliers - the whiskers
+        scols = []
+        for colname in colnames:
+            outlier_colname = "__{}_outlier".format(colname)
+            scols.append(
+                F.min(F.when(~F.col(outlier_colname), F.col(colname)).otherwise(F.lit(None))).alias(
+                    "__{}_min".format(colname)
+                )
+            )
+            scols.append(
+                F.max(F.when(~F.col(outlier_colname), F.col(colname)).otherwise(F.lit(None))).alias(
+                    "__{}_max".format(colname)
+                )
+            )
+
+        pdf = multicol_outliers.select(*scols).toPandas()
+
+        i = 0
+        whiskers = {}
+        for colname in colnames:
+            min = pdf.iloc[0, i]
+            i += 1
+            max = pdf.iloc[0, i]
+            i += 1
+            whiskers[colname] = {
+                "min": min,
+                "max": max,
+            }
+
+        return whiskers
 
     @staticmethod
     def calc_whiskers(colname, outliers):
@@ -331,7 +412,7 @@ class BoxPlotBase:
         # Filters only the outliers, should "showfliers" be True
         fliers_df = outliers.filter("`__{}_outlier`".format(colname))
 
-        # If shows fliers, takes the top 1k with highest absolute values
+        # If it shows fliers, take the top 1k with highest absolute values
         # Here we normalize the values by subtracting the minimum value from
         # each, and use absolute values.
         order_col = F.abs(F.col("`{}`".format(colname)) - min_val.item())
@@ -383,6 +464,8 @@ class KdePlotBase(NumericPlotBase):
 
     @staticmethod
     def compute_kde(sdf, bw_method=None, ind=None):
+        from pyspark.mllib.stat import KernelDensity
+
         # 'sdf' is a Spark DataFrame that selects one column.
 
         # Using RDD is slow so we might have to change it to Dataset based implementation
@@ -489,10 +572,14 @@ class PandasOnSparkPlotAccessor(PandasObject):
         return module
 
     def __call__(self, kind="line", backend=None, **kwargs):
+        kind = {"density": "kde"}.get(kind, kind)
+
+        if is_remote() and kind in ["hist", "kde"]:
+            return unsupported_function(class_name="pd.DataFrame", method_name=kind)()
+
         plot_backend = PandasOnSparkPlotAccessor._get_plot_backend(backend)
         plot_data = self.data
 
-        kind = {"density": "kde"}.get(kind, kind)
         if hasattr(plot_backend, "plot_pandas_on_spark"):
             # use if there's pandas-on-Spark specific method.
             return plot_backend.plot_pandas_on_spark(plot_data, kind=kind, **kwargs)
@@ -815,10 +902,8 @@ class PandasOnSparkPlotAccessor(PandasObject):
         """
         from pyspark.pandas import DataFrame, Series
 
-        if isinstance(self.data, Series):
+        if isinstance(self.data, (Series, DataFrame)):
             return self(kind="box", **kwds)
-        elif isinstance(self.data, DataFrame):
-            return unsupported_function(class_name="pd.DataFrame", method_name="box")()
 
     def hist(self, bins=10, **kwds):
         """
@@ -833,9 +918,9 @@ class PandasOnSparkPlotAccessor(PandasObject):
         ----------
         bins : integer or sequence, default 10
             Number of histogram bins to be used. If an integer is given, bins + 1
-            bin edges are calculated and returned. If bins is a sequence, gives
+            bin edges are calculated and returned. If bins is a sequence, it gives
             bin edges, including left edge of first bin and right edge of last
-            bin. In this case, bins is returned unmodified.
+            bin. In this case, bins are returned unmodified.
         **kwds
             All other plotting keyword arguments to be passed to
             plotting backend.
@@ -868,6 +953,9 @@ class PandasOnSparkPlotAccessor(PandasObject):
             >>> df = ps.from_pandas(df)
             >>> df.plot.hist(bins=12, alpha=0.5)  # doctest: +SKIP
         """
+        if is_remote():
+            return unsupported_function(class_name="pd.DataFrame", method_name="hist")()
+
         return self(kind="hist", bins=bins, **kwds)
 
     def kde(self, bw_method=None, ind=None, **kwargs):
@@ -943,6 +1031,9 @@ class PandasOnSparkPlotAccessor(PandasObject):
             ... })
             >>> df.plot.kde(ind=[1, 2, 3, 4, 5, 6], bw_method=0.3)  # doctest: +SKIP
         """
+        if is_remote():
+            return unsupported_function(class_name="pd.DataFrame", method_name="kde")()
+
         return self(kind="kde", bw_method=bw_method, ind=ind, **kwargs)
 
     density = kde
@@ -957,11 +1048,11 @@ class PandasOnSparkPlotAccessor(PandasObject):
         Parameters
         ----------
         x : label or position, optional
-            Coordinates for the X axis. By default uses the index.
+            Coordinates for the X axis. By default it uses the index.
         y : label or position, optional
-            Column to plot. By default uses all columns.
+            Column to plot. By default it uses all columns.
         stacked : bool, default True
-            Area plots are stacked by default. Set to False to create a
+            Area plots are stacked by default. Set to False to create an
             unstacked plot (matplotlib-only).
         **kwds : optional
             Additional keyword arguments are documented in
@@ -985,7 +1076,7 @@ class PandasOnSparkPlotAccessor(PandasObject):
             ...     'signups': [5, 5, 6, 12, 14, 13],
             ...     'visits': [20, 42, 28, 62, 81, 50],
             ... }, index=pd.date_range(start='2018/01/01', end='2018/07/01',
-            ...                        freq='M'))
+            ...                        freq='ME'))
             >>> df.sales.plot.area()  # doctest: +SKIP
 
         For DataFrame
@@ -997,7 +1088,7 @@ class PandasOnSparkPlotAccessor(PandasObject):
             ...     'signups': [5, 5, 6, 12, 14, 13],
             ...     'visits': [20, 42, 28, 62, 81, 50],
             ... }, index=pd.date_range(start='2018/01/01', end='2018/07/01',
-            ...                        freq='M'))
+            ...                        freq='ME'))
             >>> df.plot.area()  # doctest: +SKIP
         """
         from pyspark.pandas import DataFrame, Series

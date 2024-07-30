@@ -21,7 +21,7 @@ import java.time.ZoneId
 import java.util
 import java.util.{Locale, Map => JMap, UUID}
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.parquet.hadoop.api.{InitContext, ReadSupport}
@@ -35,8 +35,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.RebaseDateTime.RebaseSpec
 import org.apache.spark.sql.errors.QueryExecutionErrors
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
+import org.apache.spark.sql.internal.{LegacyBehaviorPolicy, SQLConf}
 import org.apache.spark.sql.types._
 
 /**
@@ -185,17 +184,6 @@ object ParquetReadSupport extends Logging {
   }
 
   /**
-   * Overloaded method for backward compatibility with
-   * `caseSensitive` default to `true` and `useFieldId` default to `false`
-   */
-  def clipParquetSchema(
-      parquetSchema: MessageType,
-      catalystSchema: StructType,
-      caseSensitive: Boolean = true): MessageType = {
-    clipParquetSchema(parquetSchema, catalystSchema, caseSensitive, useFieldId = false)
-  }
-
-  /**
    * Tailors `parquetSchema` according to `catalystSchema` by removing column paths don't exist
    * in `catalystSchema`, and adding those only exist in `catalystSchema`.
    */
@@ -310,7 +298,9 @@ object ParquetReadSupport extends Logging {
         Types
           .buildGroup(parquetList.getRepetition)
           .as(LogicalTypeAnnotation.listType())
-          .addField(clipParquetType(repeatedGroup, elementType, caseSensitive, useFieldId))
+          .addField(
+            clipParquetType(
+              repeatedGroup, elementType, caseSensitive, useFieldId))
           .named(parquetList.getName)
       } else {
         val newRepeatedGroup = Types
@@ -359,8 +349,10 @@ object ParquetReadSupport extends Logging {
       val newRepeatedGroup = Types
         .repeatedGroup()
         .as(repeatedGroup.getLogicalTypeAnnotation)
-        .addField(clipParquetType(parquetKeyType, keyType, caseSensitive, useFieldId))
-        .addField(clipParquetType(parquetValueType, valueType, caseSensitive, useFieldId))
+        .addField(
+          clipParquetType(parquetKeyType, keyType, caseSensitive, useFieldId))
+        .addField(
+          clipParquetType(parquetValueType, valueType, caseSensitive, useFieldId))
         .named(repeatedGroup.getName)
       if (useFieldId && repeatedGroup.getId != null) {
         newRepeatedGroup.withId(repeatedGroup.getId.intValue())
@@ -409,7 +401,8 @@ object ParquetReadSupport extends Logging {
       caseSensitive: Boolean,
       useFieldId: Boolean): Seq[Type] = {
     val toParquet = new SparkToParquetSchemaConverter(
-      writeLegacyParquetFormat = false, useFieldId = useFieldId)
+      writeLegacyParquetFormat = false,
+      useFieldId = useFieldId)
     lazy val caseSensitiveParquetFieldMap =
         parquetRecord.getFields.asScala.map(f => f.getName -> f).toMap
     lazy val caseInsensitiveParquetFieldMap =

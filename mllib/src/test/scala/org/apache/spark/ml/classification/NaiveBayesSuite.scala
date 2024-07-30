@@ -30,6 +30,7 @@ import org.apache.spark.ml.param.ParamsSuite
 import org.apache.spark.ml.util.{DefaultReadWriteTest, MLTest, MLTestingUtils}
 import org.apache.spark.ml.util.TestingUtils._
 import org.apache.spark.sql.{Dataset, Row}
+import org.apache.spark.util.ArrayImplicits._
 
 class NaiveBayesSuite extends MLTest with DefaultReadWriteTest {
 
@@ -345,7 +346,7 @@ class NaiveBayesSuite extends MLTest with DefaultReadWriteTest {
 
   test("Bernoulli: check vectors") {
     val df1 = sc.parallelize(Seq(
-      (1.0, 1.0, Vectors.dense(1.0, 2.0)),
+      (1.0, 1.0, Vectors.dense(1.0)),
       (0.0, 1.0, null)
     )).toDF("label", "weight", "features")
     val e1 = intercept[Exception] {
@@ -418,11 +419,11 @@ class NaiveBayesSuite extends MLTest with DefaultReadWriteTest {
       generateGaussianNaiveBayesInput(piArray, thetaArray, sigmaArray, nPoints, 17).toDF()
 
     val predictionAndLabels = model.transform(validationDataset).select("prediction", "label")
-    validatePrediction(predictionAndLabels.collect())
+    validatePrediction(predictionAndLabels.collect().toImmutableArraySeq)
 
     val featureAndProbabilities = model.transform(validationDataset)
       .select("features", "probability")
-    validateProbabilities(featureAndProbabilities.collect(), model, "gaussian")
+    validateProbabilities(featureAndProbabilities.collect().toImmutableArraySeq, model, "gaussian")
   }
 
   test("Naive Bayes Gaussian - Model Coefficients") {
@@ -585,7 +586,7 @@ object NaiveBayesSuite {
 
   private def calcLabel(p: Double, pi: Array[Double]): Int = {
     var sum = 0.0
-    for (j <- 0 until pi.length) {
+    for (j <- pi.indices) {
       sum += pi(j)
       if (p < sum) return j
     }
